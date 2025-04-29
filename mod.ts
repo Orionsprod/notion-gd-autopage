@@ -12,7 +12,7 @@ const DRIVE_SA_KEY = Deno.env.get("GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY")!;
 const DRIVE_ROOT_FOLDER = Deno.env.get("DRIVE_ROOT_FOLDER") ?? "root";
 
 // Verify Notion webhook signature (HMAC-SHA256)
-async function verifySignature(rawBody: string, signatureHex: string) {
+async function verifySignature(body: ArrayBuffer, signatureHex: string) {
   const enc = new TextEncoder();
   const key = await crypto.subtle.importKey(
     "raw",
@@ -21,7 +21,7 @@ async function verifySignature(rawBody: string, signatureHex: string) {
     false,
     ["sign"],
   );
-  const sigBuffer = await crypto.subtle.sign("HMAC", key, enc.encode(rawBody));
+  const sigBuffer = await crypto.subtle.sign("HMAC", key, body);
   const expectedHex = Array.from(new Uint8Array(sigBuffer))
     .map(b => b.toString(16).padStart(2, "0"))
     .join("");
@@ -117,9 +117,10 @@ async function setDriveIdOnPage(pageId: string, folderId: string) {
 
 // Main HTTP server
 serve(async (req) => {
-  const rawBody = await req.text();
+  // Read raw body as ArrayBuffer for signature verification
+  const buf = await req.arrayBuffer();
 
-  // Extract and verify Notion signature
+  // Extract signature header
   const sigHeader = req.headers.get("X-Notion-Signature");
   if (!sigHeader) {
     console.error("Missing X-Notion-Signature header");
@@ -130,15 +131,18 @@ serve(async (req) => {
     console.error("Invalid signature header format", sigHeader);
     return new Response("Invalid signature header", { status: 400 });
   }
+
+  // Verify signature
   try {
-    await verifySignature(rawBody, signatureHex);
+    await verifySignature(buf, signatureHex);
   } catch (err) {
     console.error("Signature verification failed:", err);
     return new Response("Invalid signature", { status: 400 });
   }
 
-  // Parse payload
+  // Decode and parse JSON
   let payload: any;
+  const rawBody = new TextDecoder().decode(buf);
   try {
     payload = JSON.parse(rawBody);
   } catch {
@@ -146,7 +150,7 @@ serve(async (req) => {
     return new Response("Invalid JSON", { status: 400 });
   }
 
-  // Handle Notion's verification challenge
+  // Handle verification challenge
   if (payload.type === "verification") {
     return new Response(payload.challenge, { status: 200, headers: { "Content-Type": "text/plain" } });
   }
@@ -183,6 +187,6 @@ serve(async (req) => {
     return new Response("OK", { status: 200 });
   } catch (err) {
     console.error("Error processing events:", err);
-    return new Response("Error", { status: 500 });
+    return new Response("Error processing events", { status: 500 });
   }
 });
