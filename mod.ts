@@ -126,15 +126,15 @@ serve(async (req) => {
   }
 
   // Handle Notion's subscription verification
-  if (payload.verification_token) {
-    console.log("Received verification_token from Notion:", payload.verification_token);
-    return new Response("OK", { status: 200 });
-  }
+//  if (payload.verification_token) {
+ //   console.log("Received verification_token from Notion:", payload.verification_token);
+//    return new Response("OK", { status: 200 });
+//  }
 
   // Verify signature on actual event payloads (uncomment after verifying)
   try {
     const signature = req.headers.get("Notion-Signature")!;
-    // await verifySignature(rawBody, signature);
+    await verifySignature(rawBody, signature);
   } catch (err) {
     console.error("Signature verification failed:", err);
     return new Response("Invalid signature", { status: 400 });
