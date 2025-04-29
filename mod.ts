@@ -12,7 +12,7 @@ const DRIVE_SA_KEY = Deno.env.get("GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY")!;
 const DRIVE_ROOT_FOLDER = Deno.env.get("DRIVE_ROOT_FOLDER") ?? "root";
 
 // Verify Notion webhook signature (HMAC-SHA256)
-async function verifySignature(rawBody: string, signature: string) {
+async function verifySignature(rawBody: string, signatureHex: string) {
   const enc = new TextEncoder();
   const key = await crypto.subtle.importKey(
     "raw",
@@ -22,10 +22,11 @@ async function verifySignature(rawBody: string, signature: string) {
     ["sign"],
   );
   const sigBuffer = await crypto.subtle.sign("HMAC", key, enc.encode(rawBody));
-  const hashArray = Array.from(new Uint8Array(sigBuffer));
-  const expected = hashArray.map(b => b.toString(16).padStart(2, "0")).join("");
-  if (signature !== expected) {
-    throw new Error("Invalid signature");
+  const expectedHex = Array.from(new Uint8Array(sigBuffer))
+    .map(b => b.toString(16).padStart(2, "0"))
+    .join("");
+  if (signatureHex !== expectedHex) {
+    throw new Error(`Invalid signature: expected ${expectedHex}, got ${signatureHex}`);
   }
 }
 
@@ -117,7 +118,27 @@ async function setDriveIdOnPage(pageId: string, folderId: string) {
 // Main HTTP server
 serve(async (req) => {
   const rawBody = await req.text();
-  let payload: Record<string, any>;
+
+  // Extract and verify Notion signature
+  const sigHeader = req.headers.get("X-Notion-Signature");
+  if (!sigHeader) {
+    console.error("Missing X-Notion-Signature header");
+    return new Response("Missing signature", { status: 400 });
+  }
+  const [algo, signatureHex] = sigHeader.split("=");
+  if (algo !== "sha256" || !signatureHex) {
+    console.error("Invalid signature header format", sigHeader);
+    return new Response("Invalid signature header", { status: 400 });
+  }
+  try {
+    await verifySignature(rawBody, signatureHex);
+  } catch (err) {
+    console.error("Signature verification failed:", err);
+    return new Response("Invalid signature", { status: 400 });
+  }
+
+  // Parse payload
+  let payload: any;
   try {
     payload = JSON.parse(rawBody);
   } catch {
@@ -125,22 +146,12 @@ serve(async (req) => {
     return new Response("Invalid JSON", { status: 400 });
   }
 
-  // Handle Notion's subscription verification
-//  if (payload.verification_token) {
- //   console.log("Received verification_token from Notion:", payload.verification_token);
-//    return new Response("OK", { status: 200 });
-//  }
-
-  // Verify signature on actual event payloads (uncomment after verifying)
-  try {
-    const signature = req.headers.get("Notion-Signature")!;
-    await verifySignature(rawBody, signature);
-  } catch (err) {
-    console.error("Signature verification failed:", err);
-    return new Response("Invalid signature", { status: 400 });
+  // Handle Notion's verification challenge
+  if (payload.type === "verification") {
+    return new Response(payload.challenge, { status: 200, headers: { "Content-Type": "text/plain" } });
   }
 
-  // Process event callbacks
+  // Process events
   try {
     for (const ev of payload.events) {
       const pageId = ev.subject.resourceId!;
@@ -172,6 +183,6 @@ serve(async (req) => {
     return new Response("OK", { status: 200 });
   } catch (err) {
     console.error("Error processing events:", err);
-    return new Response("Error processing events", { status: 500 });
+    return new Response("Error", { status: 500 });
   }
 });
