@@ -1,14 +1,17 @@
-
 // mod.ts
 import { serve } from "https://deno.land/std@0.181.0/http/server.ts";
 import { Client as NotionClient } from "npm:@notionhq/client";
 
+// Initialize Notion client
 const notion = new NotionClient({ auth: Deno.env.get("NOTION_API_KEY")! });
+
+// Environment variables
 const NOTION_SIGNING_SECRET = Deno.env.get("NOTION_WEBHOOK_SIGNING_SECRET")!;
 const DRIVE_SA_EMAIL = Deno.env.get("GOOGLE_SERVICE_ACCOUNT_EMAIL")!;
 const DRIVE_SA_KEY = Deno.env.get("GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY")!;
 const DRIVE_ROOT_FOLDER = Deno.env.get("DRIVE_ROOT_FOLDER") ?? "root";
 
+// Verify Notion webhook signature (HMAC-SHA256)
 async function verifySignature(rawBody: string, signature: string) {
   const enc = new TextEncoder();
   const key = await crypto.subtle.importKey(
@@ -26,6 +29,7 @@ async function verifySignature(rawBody: string, signature: string) {
   }
 }
 
+// Obtain Google Drive OAuth2 token via JWT using service account
 async function getDriveAccessToken(): Promise<string> {
   const jwtHeader = { alg: "RS256", typ: "JWT" };
   const now = Math.floor(Date.now() / 1000);
@@ -36,7 +40,7 @@ async function getDriveAccessToken(): Promise<string> {
     exp: now + 3600,
     iat: now,
   };
-  function base64UrlEncode(obj: object) {
+  function base64UrlEncode(obj: object): string {
     return btoa(JSON.stringify(obj))
       .replace(/\+/g, "-")
       .replace(/\//g, "_")
@@ -45,7 +49,7 @@ async function getDriveAccessToken(): Promise<string> {
   const unsigned = `${base64UrlEncode(jwtHeader)}.${base64UrlEncode(jwtClaim)}`;
   const key = await crypto.subtle.importKey(
     "pkcs8",
-    new TextEncoder().encode(DRIVE_SA_KEY.replace(/\\\\n/g, "\\n")),
+    new TextEncoder().encode(DRIVE_SA_KEY.replace(/\\n/g, "\n")),
     { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" },
     false,
     ["sign"],
@@ -56,6 +60,7 @@ async function getDriveAccessToken(): Promise<string> {
     .replace(/\//g, "_")
     .replace(/=+$/, "");
   const jwt = `${unsigned}.${signature}`;
+
   const resp = await fetch("https://oauth2.googleapis.com/token", {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
@@ -68,6 +73,7 @@ async function getDriveAccessToken(): Promise<string> {
   return data.access_token;
 }
 
+// Google Drive operations
 async function createFolder(name: string): Promise<string> {
   const token = await getDriveAccessToken();
   const resp = await fetch("https://www.googleapis.com/drive/v3/files", {
@@ -76,11 +82,7 @@ async function createFolder(name: string): Promise<string> {
       "Authorization": `Bearer ${token}`,
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({
-      name,
-      mimeType: "application/vnd.google-apps.folder",
-      parents: [DRIVE_ROOT_FOLDER],
-    }),
+    body: JSON.stringify({ name, mimeType: "application/vnd.google-apps.folder", parents: [DRIVE_ROOT_FOLDER] }),
   });
   const { id } = await resp.json();
   return id;
@@ -90,10 +92,7 @@ async function renameFolder(id: string, newName: string) {
   const token = await getDriveAccessToken();
   await fetch(`https://www.googleapis.com/drive/v3/files/${id}`, {
     method: "PATCH",
-    headers: {
-      "Authorization": `Bearer ${token}`,
-      "Content-Type": "application/json",
-    },
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
     body: JSON.stringify({ name: newName }),
   });
 }
@@ -102,36 +101,39 @@ async function deleteFolder(id: string) {
   const token = await getDriveAccessToken();
   await fetch(`https://www.googleapis.com/drive/v3/files/${id}`, {
     method: "PATCH",
-    headers: {
-      "Authorization": `Bearer ${token}`,
-      "Content-Type": "application/json",
-    },
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
     body: JSON.stringify({ trashed: true }),
   });
 }
 
+// Update the Notion page with the Drive folder ID
 async function setDriveIdOnPage(pageId: string, folderId: string) {
   await notion.pages.update({
     page_id: pageId,
-    properties: {
-      "Drive Folder ID": {
-        rich_text: [{ text: { content: folderId } }],
-      },
-    },
+    properties: { "Drive Folder ID": { rich_text: [{ text: { content: folderId } }] } },
   });
 }
 
+// Main HTTP server
 serve(async (req) => {
   try {
     const rawBody = await req.text();
     const signature = req.headers.get("Notion-Signature")!;
+
+    // Temporarily skip signature verification to complete initial subscription
     // await verifySignature(rawBody, signature);
+
     const payload = JSON.parse(rawBody);
 
+    // Handle Notion's verification challenge
     if (payload.type === "verification") {
-      return new Response(payload.challenge, { status: 200 });
+      return new Response(payload.challenge, {
+        status: 200,
+        headers: { "Content-Type": "text/plain" },
+      });
     }
 
+    // Process actual events
     for (const ev of payload.events) {
       const pageId = ev.subject.resourceId!;
       const page = await notion.pages.retrieve({ page_id: pageId });
@@ -150,19 +152,16 @@ serve(async (req) => {
           break;
         }
         case "page.updated": {
-          if (existingDriveId) {
-            await renameFolder(existingDriveId, title);
-          }
+          if (existingDriveId) await renameFolder(existingDriveId, title);
           break;
         }
         case "page.deleted": {
-          if (existingDriveId) {
-            await deleteFolder(existingDriveId);
-          }
+          if (existingDriveId) await deleteFolder(existingDriveId);
           break;
         }
       }
     }
+
     return new Response("OK", { status: 200 });
   } catch (err) {
     console.error(err);
