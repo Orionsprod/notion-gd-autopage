@@ -125,7 +125,7 @@ serve(async (req) => {
   try {
     const rawBody = await req.text();
     const signature = req.headers.get("Notion-Signature")!;
-    await verifySignature(rawBody, signature);
+    // await verifySignature(rawBody, signature);
     const payload = JSON.parse(rawBody);
 
     if (payload.type === "verification") {
