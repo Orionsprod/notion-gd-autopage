@@ -12,7 +12,7 @@ const DRIVE_SA_KEY = Deno.env.get("GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY")!;
 const DRIVE_ROOT_FOLDER = Deno.env.get("DRIVE_ROOT_FOLDER") ?? "root";
 
 // Verify Notion webhook signature (HMAC-SHA256)
-async function verifySignature(body: ArrayBuffer, signatureHex: string) {
+async function verifySignature(rawBody: string, signatureHex: string) {
   const enc = new TextEncoder();
   const key = await crypto.subtle.importKey(
     "raw",
@@ -21,7 +21,8 @@ async function verifySignature(body: ArrayBuffer, signatureHex: string) {
     false,
     ["sign"],
   );
-  const sigBuffer = await crypto.subtle.sign("HMAC", key, body);
+  // Compute HMAC over the raw body string bytes
+  const sigBuffer = await crypto.subtle.sign("HMAC", key, enc.encode(rawBody));
   const expectedHex = Array.from(new Uint8Array(sigBuffer))
     .map(b => b.toString(16).padStart(2, "0"))
     .join("");
@@ -88,7 +89,6 @@ async function createFolder(name: string): Promise<string> {
   const { id } = await resp.json();
   return id;
 }
-
 async function renameFolder(id: string, newName: string) {
   const token = await getDriveAccessToken();
   await fetch(`https://www.googleapis.com/drive/v3/files/${id}`, {
@@ -97,7 +97,6 @@ async function renameFolder(id: string, newName: string) {
     body: JSON.stringify({ name: newName }),
   });
 }
-
 async function deleteFolder(id: string) {
   const token = await getDriveAccessToken();
   await fetch(`https://www.googleapis.com/drive/v3/files/${id}`, {
@@ -106,7 +105,6 @@ async function deleteFolder(id: string) {
     body: JSON.stringify({ trashed: true }),
   });
 }
-
 // Update the Notion page with the Drive folder ID
 async function setDriveIdOnPage(pageId: string, folderId: string) {
   await notion.pages.update({
@@ -114,35 +112,28 @@ async function setDriveIdOnPage(pageId: string, folderId: string) {
     properties: { "Drive Folder ID": { rich_text: [{ text: { content: folderId } }] } },
   });
 }
-
 // Main HTTP server
 serve(async (req) => {
-  // Read raw body as ArrayBuffer for signature verification
-  const buf = await req.arrayBuffer();
+  // Read raw body as text
+  const rawBody = await req.text();
 
   // Extract signature header
-  const sigHeader = req.headers.get("X-Notion-Signature");
-  if (!sigHeader) {
-    console.error("Missing X-Notion-Signature header");
+  const signatureHex = req.headers.get("Notion-Signature");
+  if (!signatureHex) {
+    console.error("Missing Notion-Signature header");
     return new Response("Missing signature", { status: 400 });
   }
-  const [algo, signatureHex] = sigHeader.split("=");
-  if (algo !== "sha256" || !signatureHex) {
-    console.error("Invalid signature header format", sigHeader);
-    return new Response("Invalid signature header", { status: 400 });
-  }
 
-  // Verify signature
+  // Verify HMAC signature
   try {
-    await verifySignature(buf, signatureHex);
+    await verifySignature(rawBody, signatureHex);
   } catch (err) {
     console.error("Signature verification failed:", err);
     return new Response("Invalid signature", { status: 400 });
   }
 
-  // Decode and parse JSON
+  // Parse JSON payload
   let payload: any;
-  const rawBody = new TextDecoder().decode(buf);
   try {
     payload = JSON.parse(rawBody);
   } catch {
@@ -150,7 +141,7 @@ serve(async (req) => {
     return new Response("Invalid JSON", { status: 400 });
   }
 
-  // Handle verification challenge
+  // Handle Notion's verification challenge
   if (payload.type === "verification") {
     return new Response(payload.challenge, { status: 200, headers: { "Content-Type": "text/plain" } });
   }
@@ -167,7 +158,6 @@ serve(async (req) => {
       const existingDriveId = page.properties["Drive Folder ID"].rich_text[0]
         ? page.properties["Drive Folder ID"].rich_text[0].plain_text
         : null;
-
       switch (ev.eventType) {
         case "page.created": {
           const folderId = await createFolder(title);
