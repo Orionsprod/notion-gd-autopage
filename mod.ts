@@ -21,7 +21,6 @@ async function verifySignature(rawBody: string, signatureHex: string) {
     false,
     ["sign"],
   );
-  // Compute HMAC over the raw body string bytes
   const sigBuffer = await crypto.subtle.sign("HMAC", key, enc.encode(rawBody));
   const expectedHex = Array.from(new Uint8Array(sigBuffer))
     .map(b => b.toString(16).padStart(2, "0"))
@@ -89,6 +88,7 @@ async function createFolder(name: string): Promise<string> {
   const { id } = await resp.json();
   return id;
 }
+
 async function renameFolder(id: string, newName: string) {
   const token = await getDriveAccessToken();
   await fetch(`https://www.googleapis.com/drive/v3/files/${id}`, {
@@ -97,6 +97,7 @@ async function renameFolder(id: string, newName: string) {
     body: JSON.stringify({ name: newName }),
   });
 }
+
 async function deleteFolder(id: string) {
   const token = await getDriveAccessToken();
   await fetch(`https://www.googleapis.com/drive/v3/files/${id}`, {
@@ -105,6 +106,7 @@ async function deleteFolder(id: string) {
     body: JSON.stringify({ trashed: true }),
   });
 }
+
 // Update the Notion page with the Drive folder ID
 async function setDriveIdOnPage(pageId: string, folderId: string) {
   await notion.pages.update({
@@ -112,27 +114,13 @@ async function setDriveIdOnPage(pageId: string, folderId: string) {
     properties: { "Drive Folder ID": { rich_text: [{ text: { content: folderId } }] } },
   });
 }
+
 // Main HTTP server
 serve(async (req) => {
   // Read raw body as text
   const rawBody = await req.text();
 
-  // Extract signature header
-  const signatureHex = req.headers.get("Notion-Signature");
-  if (!signatureHex) {
-    console.error("Missing Notion-Signature header");
-    return new Response("Missing signature", { status: 400 });
-  }
-
-  // Verify HMAC signature
-  try {
-    await verifySignature(rawBody, signatureHex);
-  } catch (err) {
-    console.error("Signature verification failed:", err);
-    return new Response("Invalid signature", { status: 400 });
-  }
-
-  // Parse JSON payload
+  // Try parse JSON to detect verification requests first
   let payload: any;
   try {
     payload = JSON.parse(rawBody);
@@ -141,9 +129,27 @@ serve(async (req) => {
     return new Response("Invalid JSON", { status: 400 });
   }
 
-  // Handle Notion's verification challenge
+  // Handle Notion's verification challenge (no signature required)
   if (payload.type === "verification") {
     return new Response(payload.challenge, { status: 200, headers: { "Content-Type": "text/plain" } });
+  }
+
+  // For actual events, verify signature
+  const sigHeader = req.headers.get("X-Notion-Signature");
+  if (!sigHeader) {
+    console.error("Missing X-Notion-Signature header");
+    return new Response("Missing signature", { status: 400 });
+  }
+  const [algo, signatureHex] = sigHeader.split("=");
+  if (algo !== "sha256" || !signatureHex) {
+    console.error("Invalid signature header format", sigHeader);
+    return new Response("Invalid signature header", { status: 400 });
+  }
+  try {
+    await verifySignature(rawBody, signatureHex);
+  } catch (err) {
+    console.error("Signature verification failed:", err);
+    return new Response("Invalid signature", { status: 400 });
   }
 
   // Process events
