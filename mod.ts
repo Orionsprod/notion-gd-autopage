@@ -117,30 +117,30 @@ async function setDriveIdOnPage(pageId: string, folderId: string) {
 // Main HTTP server
 serve(async (req) => {
   const rawBody = await req.text();
-  let payload: any;
+  let payload: Record<string, any>;
   try {
     payload = JSON.parse(rawBody);
   } catch {
+    console.error("Invalid JSON payload");
     return new Response("Invalid JSON", { status: 400 });
   }
 
-  // Handle Notion's verification challenge before signature check
-  if (payload.type === "verification") {
-    return new Response(payload.challenge, {
-      status: 200,
-      headers: { "Content-Type": "text/plain" },
-    });
+  // Handle Notion's subscription verification
+  if (payload.verification_token) {
+    console.log("Received verification_token from Notion:", payload.verification_token);
+    return new Response("OK", { status: 200 });
   }
 
+  // Verify signature on actual event payloads (uncomment after verifying)
   try {
     const signature = req.headers.get("Notion-Signature")!;
-    // After initial setup, re-enable signature verification:
     // await verifySignature(rawBody, signature);
   } catch (err) {
     console.error("Signature verification failed:", err);
     return new Response("Invalid signature", { status: 400 });
   }
 
+  // Process event callbacks
   try {
     for (const ev of payload.events) {
       const pageId = ev.subject.resourceId!;
@@ -169,10 +169,9 @@ serve(async (req) => {
         }
       }
     }
-
     return new Response("OK", { status: 200 });
   } catch (err) {
-    console.error(err);
+    console.error("Error processing events:", err);
     return new Response("Error processing events", { status: 500 });
   }
 });
