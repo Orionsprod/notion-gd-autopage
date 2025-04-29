@@ -16,7 +16,7 @@ async function verifySignature(rawBody: string, signature: string) {
   const enc = new TextEncoder();
   const key = await crypto.subtle.importKey(
     "raw",
-    enc.encode(NOTION_SIGNING_SECRET),
+    enc.encode(NOTION_WEBHOOK_SIGNING_SECRET),
     { name: "HMAC", hash: "SHA-256" },
     false,
     ["sign"],
